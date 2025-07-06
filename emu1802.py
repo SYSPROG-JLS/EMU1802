@@ -111,9 +111,9 @@ Long_Br_Skp = ["1 == 1",            # LBR
 
 or_and_xor_add = [' ', '|', '&', '^', '+']
 
-debug = True
+debug = True  # Set to True for register & memory dump between instructions
 
-freq = 1/2
+delay = 500   # Sleep time between instructions in milliseconds
 
 # Define 256 Bytes of RAM
 #RAM = ['7A', 'F8', '10', 'B1', '21', '91', '3A', '04', 
@@ -123,9 +123,97 @@ freq = 1/2
 #       '64', '22', 'F0', 'FC', '01', '52', 'FD', '10', '3A', '0A', '00',
 #       '30', '07', '00', '00', '00', '00', '00', '00', '00', '00', '00', '00']
 RAM = ['E2', 'F8', '00', 'B2', 'F8', '20', 'A2', 
-       '6C', 'A3', '6C', '83', 'F4', '52',
-       '64', '00', '00', '00', '00', '00', '00', '00', '00', '00', '00', '00',
+       '6C', 'A3', '6C', '83', 'F5', '52',
+       '64', '22', '00', '00', '00', '00', '00', '00', '00', '00', '00', '00',
        '00', '00', '00', '00', '00', '00', '00', '00']
+
+
+def subtract(x, y):
+    # Subtraction is 2's complement: each bit of the subtrahend is complemented and the 
+    # resultant byte added to the minuend plus 1. 
+    # The final carry of this operation is stored in DF:
+    # DF=O indicates a borrow DF=1 indicates no borrow
+
+    # Example1: 42-0E=42+F1+1=134
+    # D register contains 34, DF contains 1. (No borrow)
+
+    # Example2: 42-42=42+BD+1=100
+    # D register contains 00, DF contains 1. (No borrow)
+
+    # Example3: 42-77=42+88+1=CB
+    # D register contains CB, DF contains O. (Borrow)
+
+    minuend = int(x, 16)
+
+    z = bin(int(y, 16))[2:].zfill(8)
+    subtrahend = ''.join(['1' if d == '0' else '0' for d in z])
+    
+    r = hex(minuend + int(subtrahend, 2) + 1)[2:].zfill(2).upper()
+
+    if len(r) == 3:
+        return (r[1:], int(r[0]))
+    else:
+        return (r, 0)
+
+
+def subtract_with_borrow(x, y, df):
+    # MINUEND - SUBTRAHEND - (NOT DF) --> DF, 0
+
+    # CONDITION I: DF = 0, i.e. Borrow = 1
+    # Borrow is present from a preceding carry
+    # 
+    # Case 1 M(R(X)) > D
+    # Example:
+    # M(R(X) = 40
+    #      D = 20
+    # 40 - 20 - 1 = 40 +DF + 0 = llF 
+    # After addition:
+    #    D register contains 1F
+    #    DF contains I (Borrow = 0)
+    # 
+    # Case 2 M(R(X)) < D 
+    #  Example:
+    # M(R(X)) = 4A 
+    #       D = Cl
+    # 4A - C1 - 1 = 4A + 3E + 0 = 88 
+    # After addition:
+    #    D register contains 88
+    #    DF contains 0 (Borrow = 1)
+    # 
+    # 
+    # CONDITION II: DF = 1, i.e. Borrow = 0
+    # No borrow is present from a preceding carry
+    # 
+    # Case 3 M(R(X)) > D 
+    #  Example:
+    # M(R(X)) = 64 
+    #       D = 32
+    # 64 - 32 - 0 = 64 + CD + 1 = 132 
+    # After addition:
+    #    D register contains 32
+    #    DF contains 1 (Borrow = 0)
+    # 
+    # Case 4 M(R(X)) < D 
+    # Example:
+    # M(R(X)) = 71 
+    #       D = F2
+    # 71 - F2 - 0 = 71 + OD + 1 = 7F 
+    # After addition:
+    #    D register contains 7F
+    #    DF contains 0 (Borrow = 1)
+
+    minuend = int(x, 16)
+
+    z = bin(int(y, 16))[2:].zfill(8)
+    subtrahend = ''.join(['1' if d == '0' else '0' for d in z])
+    
+    r = hex(minuend + int(subtrahend, 2) + df)[2:].zfill(2).upper()
+
+    if len(r) == 3:
+        return (r[1:], int(r[0]))
+    else:
+        return (r, 0)
+
 
 while True:
     if debug:
@@ -224,22 +312,14 @@ while True:
             R[P].incr()
         if N in [0x5, 0x7, 0xD, 0xF]:         # SDB / SMB / SDBI / SMBI
             if N == 0x5 or N == 0x7:
-                mi = int(RAM[R[X].value], 16) 
+                m = RAM[R[X].value] 
             else:
                 R[P].incr()
-                mi = int(RAM[R[P].value], 16)
-            di = int(D, 16)
-            DFi = 0 if DF == 1 else 1            
+                m = RAM[R[P].value]
             if N == 0x5 or N == 0xD:    # SDB / SDBI
-                r = mi - di - DFi
+                D, DF = subtract_with_borrow(m, D, DF)
             else:                       # SMB / SMBI
-                r = di - mi - DFi
-            if r < 0:
-                DF = 0
-                D = hex(256 - r)[3:].zfill(2).upper()
-            else:
-                DF = 1
-                D = hex(r)[2:].zfill(2).upper()
+                D, DF = subtract_with_borrow(D, m, DF)
             R[P].incr()
         if N == 0x6:         # SHRC 
             t = bin(int(D, 16))[2:].zfill(8)   
@@ -341,21 +421,14 @@ while True:
             R[P].incr() 
         if N in [0x5, 0x7, 0xD, 0xF]:         # SD / SM / SDI / SMI
             if N == 0x5 or N == 0x7:
-                mi = int(RAM[R[X].value], 16) 
+                m = RAM[R[X].value] 
             else:
                 R[P].incr()
-                mi = int(RAM[R[P].value], 16)
-            di = int(D, 16)          
+                m = RAM[R[P].value]
             if N == 0x5 or N == 0xD:    # SD / SDI
-                r = mi - di
+                D, DF = subtract(m, D)
             else:                       # SM / SMI
-                r = di - mi
-            if r < 0:
-                DF = 0
-                D = hex(256 - r)[3:].zfill(2).upper()
-            else:
-                DF = 1
-                D = hex(r)[2:].zfill(2).upper()
+                D, DF = subtract(D, m)
             R[P].incr()
         if N == 0x6:         # SHR
             t = bin(int(D, 16))[2:].zfill(8)   
@@ -381,4 +454,4 @@ while True:
         finally:
             print("\n")
 
-    time.sleep(freq)
+    time.sleep(delay/1000)
